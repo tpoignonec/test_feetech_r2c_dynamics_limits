@@ -9,6 +9,16 @@
   <license>Apache 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>pkg-config</buildtool_depend>
+
+  <!-- single_motor_node (C++) -->
+  <depend>rclcpp</depend>
+  <depend>fmt</depend>
+  <depend>spdlog</depend>
+  <depend>range-v3</depend>
+  <depend>tl_expected</depend>
+  <depend>yaml-cpp</depend>
+  <depend>libserial-dev</depend>
 
   <exec_depend>xacro</exec_depend>
   <exec_depend>control_msgs</exec_depend>
@@ -25,7 +35,7 @@
   <exec_depend>parallel_gripper_action_controller</exec_depend>
 
   <!-- Feetech HW -->
-  <exec_depend>feetech_ros2_driver</exec_depend>
+  <depend>feetech_ros2_driver</depend>
 
   <!-- SO ARM 101 description -->
   <exec_depend>so101_description</exec_depend>
