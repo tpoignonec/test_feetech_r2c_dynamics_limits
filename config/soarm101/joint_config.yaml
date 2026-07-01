@@ -1,0 +1,69 @@
+joints:
+  shoulder_pan:
+    id: 1
+    homing_offset: -1205
+    range_min: 684
+    range_max: 3392
+    p_coefficient: 16 # may be original 16 is too much, set 12
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+
+  shoulder_lift:
+    id: 2
+    homing_offset: 1226
+    range_min: 876
+    range_max: 3256
+    p_coefficient: 16
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+
+  elbow_flex:
+    id: 3
+    homing_offset: 1214
+    range_min: 879
+    range_max: 3100
+    p_coefficient: 16
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+
+  wrist_flex:
+    id: 4
+    homing_offset: 1903
+    range_min: 698
+    range_max: 3000
+    p_coefficient: 16
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+
+  wrist_roll:
+    id: 5
+    homing_offset: 1704
+    range_min: 123
+    range_max: 3955
+    p_coefficient: 16
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+
+  gripper:
+    id: 6
+    homing_offset: 1211
+    range_min: 2046
+    range_max: 3491
+    p_coefficient: 16
+    i_coefficient: 0
+    d_coefficient: 32
+    return_delay_time: 0
+    acceleration: 254
+    max_torque_limit: 1
+    protection_current: 250
+    overload_torque: 1

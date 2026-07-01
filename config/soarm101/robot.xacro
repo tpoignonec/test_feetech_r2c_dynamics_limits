@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<robot name="so101_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- arguments -->
+  <xacro:arg name="robot_name" default="soarm101" />
+  <xacro:arg name="use_mock_hardware" default="true" />
+  <xacro:arg name="usb_port" default="/dev/ttyACM0"/>
+  <xacro:arg name="joint_config_file" default="$(find aos_config_soarm101)/ros2_control/joint_config.yaml"/>
+
+  <xacro:arg name="mesh_dir" default="package://so101_description/meshes"/>
+  <xacro:arg name="add_transmissions" default="false"/>
+
+  <!-- Camera args -->
+  <xacro:arg name="cam_wrist_xyz" default="0.0 0.0 -0.02"/>
+  <xacro:arg name="cam_wrist_rpy" default="-1.5708 0.0 -1.5708"/>
+
+  <!-- Convert args to properties for use in ${} expressions -->
+  <xacro:property name="use_ros2_control" value="$(arg use_ros2_control)"/>
+  <xacro:property name="variant" value="follower"/>
+  <xacro:property
+    name="hardware_type"
+    value="${'mock' if '$(arg use_mock_hardware)' == 'true' else 'real'}"
+  />
+
+  <!-- Include the robot macros and materials -->
+  <xacro:include filename="$(find so101_description)/urdf/so101_macros.xacro"/>
+  <xacro:include filename="$(find so101_description)/urdf/so101_materials.xacro"/>
+  <xacro:include filename="$(find so101_description)/urdf/so101_arm_common.xacro"/>
+
+  <xacro:include filename="$(find so101_description)/urdf/end_effectors/so101_ee_common.xacro"/>
+  <xacro:include filename="$(find so101_description)/urdf/end_effectors/so101_ee_leader.xacro"/>
+  <xacro:include filename="$(find so101_description)/urdf/end_effectors/so101_ee_follower.xacro"/>
+
+  <xacro:include filename="$(find so101_description)/urdf/ros2_control/so101_ros2_control.xacro"/>
+  <xacro:include filename="$(find so101_description)/urdf/so101_cameras.xacro"/>
+
+  <xacro:so101_materials/>
+  <xacro:so101_arm_common
+    mesh_dir="$(arg mesh_dir)"
+    add_transmissions="$(arg add_transmissions)"/>
+
+  <!-- KDL requires a world link -->
+  <link name="world" />
+  <joint name="$(arg robot_name)_world_joint" type="fixed">
+      <parent link="world" />
+      <child link="base_link" />
+  </joint>
+
+  <!-- Arm -->
+  <xacro:so101_ee_follower
+    mesh_dir="$(arg mesh_dir)"
+    add_transmissions="$(arg add_transmissions)"/>
+
+  <xacro:so101_ros2_control
+    variant="${variant}"
+    hardware_type="${hardware_type}"
+    usb_port="$(arg usb_port)"
+    joint_config_file="$(arg joint_config_file)"
+    system_name="SO101_${variant}_SYSTEM"/>
+
+  <!-- Cameras -->
+  <xacro:so101_wrist_camera
+      xyz="$(arg cam_wrist_xyz)"
+      rpy="$(arg cam_wrist_rpy)"/>
+
+</robot>
