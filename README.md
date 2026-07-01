@@ -46,6 +46,5 @@ ros2 run test_feetech_r2c_dynamics_limits gripper_command --ros-args \
 ros2 run test_feetech_r2c_dynamics_limits gripper_command --ros-args \
     -p position:=0.5 \
     -p max_vel:=0.5 \
-    -p max_effort:=1.0 \
-    -p verbose:=true
+    -p max_effort:=1.0
 ```

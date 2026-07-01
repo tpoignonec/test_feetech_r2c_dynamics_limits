@@ -45,14 +45,16 @@ def generate_launch_description():
         # open/close positions are in radians (0 rad = servo midpoint).
         DeclareLaunchArgument('open_position', default_value='0.8'),
         DeclareLaunchArgument('close_position', default_value='0.05'),
-        # max_velocity is the goal speed in rad/s.
+        # max_velocity is the goal speed in rad/s (applied on every
+        # write_position).
         DeclareLaunchArgument('max_velocity', default_value='3.0'),
-        # max_force -> max_torque_limit (EPROM); -1 keeps the YAML value.
-        DeclareLaunchArgument('max_force', default_value='-1'),
+        # max_torque as a percentage of rated torque (0..100 %). Used for EPROM
+        # config and applied dynamically on every write_position; -1 keeps the
+        # YAML max_torque_limit value.
+        DeclareLaunchArgument('max_torque', default_value='-1.0'),
         DeclareLaunchArgument('acceleration', default_value='50'),
         DeclareLaunchArgument('wait_seconds', default_value='5.0'),
         DeclareLaunchArgument('cycle_wait_seconds', default_value='5.0'),
-        DeclareLaunchArgument('cycles', default_value='1'),
     ]
 
     node = Node(
@@ -68,11 +70,10 @@ def generate_launch_description():
                 'open_position': _float('open_position'),
                 'close_position': _float('close_position'),
                 'max_velocity': _float('max_velocity'),
-                'max_force': _int('max_force'),
+                'max_torque': _float('max_torque'),
                 'acceleration': _int('acceleration'),
                 'wait_seconds': _float('wait_seconds'),
                 'cycle_wait_seconds': _float('cycle_wait_seconds'),
-                'cycles': _int('cycles'),
             }
         ],
     )

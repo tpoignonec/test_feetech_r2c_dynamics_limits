@@ -47,16 +47,18 @@ class SingleMotorNode : public rclcpp::Node {
     // matching the FeetechHardwareInterface position convention.
     open_position_rad_ = declare_parameter<double>("open_position", 0.0);
     close_position_rad_ = declare_parameter<double>("close_position", 2.2);
-    // Goal speed for write_position, in rad/s (converted to servo ticks/s below).
+    // Default limits used both for configuration (EPROM max_torque_limit) and
+    // as the values applied dynamically on every write_position command.
+    // Goal speed in rad/s (converted to servo ticks/s below).
     max_velocity_rad_s_ = declare_parameter<double>("max_velocity", 3.0);
-    // max_force maps to the servo's max_torque_limit (EPROM). -1 => keep the
-    // value coming from joint_config.yaml (or the motor default).
-    max_force_ = static_cast<int>(declare_parameter<int64_t>("max_force", -1));
+    // max torque limit as a percentage of rated torque (0..100 %). Internally
+    // the servo register is 0..1000 (unit 0.1%), so this is scaled by 10.
+    // -1 => keep the value coming from joint_config.yaml.
+    max_torque_percent_ = declare_parameter<double>("max_torque", -1.0);
     acceleration_ = static_cast<int>(declare_parameter<int64_t>("acceleration", 50));
     wait_seconds_ = declare_parameter<double>("wait_seconds", 2.0);
-    // Longer pause between two open/close cycles.
+    // Longer pause between the two open/close cycles.
     cycle_wait_seconds_ = declare_parameter<double>("cycle_wait_seconds", 5.0);
-    cycles_ = static_cast<int>(declare_parameter<int64_t>("cycles", 1));
   }
 
   // Returns true on success. Runs the whole one-shot sequence.
@@ -74,7 +76,10 @@ class SingleMotorNode : public rclcpp::Node {
       return false;
     }
     log_parameters_();
-    return run_open_close_();
+    const bool ok = run_open_close_();
+    // Always leave the motor torque-off, including on Ctrl+C abort.
+    stop_motor_();
+    return ok;
   }
 
  private:
@@ -117,10 +122,26 @@ class SingleMotorNode : public rclcpp::Node {
     }
     id_ = static_cast<uint8_t>(std::stoi(id_it->second));
 
-    // If max_force was provided, override the YAML max_torque_limit.
-    if (max_force_ >= 0) {
-      params_["max_torque_limit"] = std::to_string(max_force_);
+    // Resolve the effective max torque limit: the ROS param wins, otherwise
+    // fall back to the YAML value, otherwise full torque. This single value is
+    // used both to configure the EPROM max_torque_limit and as the dynamic
+    // torque limit applied on every write_position.
+    const char* torque_source = nullptr;
+    if (max_torque_percent_ >= 0.0) {
+      // Percentage (0..100 %) -> raw register units (0..1000, unit 0.1%).
+      effective_max_torque_ = static_cast<int>(max_torque_percent_ * 10.0 + 0.5);
+      torque_source = "ROS param 'max_torque' (%)";
+    } else if (const auto it_torque = params_.find("max_torque_limit"); it_torque != params_.end()) {
+      effective_max_torque_ = std::stoi(it_torque->second);
+      torque_source = "YAML 'max_torque_limit' (raw)";
+    } else {
+      effective_max_torque_ = kMaxTorque;
+      torque_source = "default (full torque)";
     }
+    effective_max_torque_ = std::clamp(effective_max_torque_, 0, kMaxTorque);
+    params_["max_torque_limit"] = std::to_string(effective_max_torque_);
+    RCLCPP_INFO(get_logger(), "Effective max torque = %d raw (%.1f %%, source: %s)", effective_max_torque_,
+                effective_max_torque_ / 10.0, torque_source);
 
     RCLCPP_INFO(get_logger(), "Controlling joint '%s' (id=%d) from '%s'", joint_name_.c_str(), id_,
                 joint_config_file_.c_str());
@@ -199,6 +220,17 @@ class SingleMotorNode : public rclcpp::Node {
     return true;
   }
 
+  void stop_motor_() {
+    if (!protocol_) {
+      return;
+    }
+    if (const auto result = protocol_->set_torque(id_, false); !result) {
+      RCLCPP_WARN(get_logger(), "Failed to disable torque on exit: %s", result.error().c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "Motor id=%d torque disabled", id_);
+    }
+  }
+
   // -- read back / logging --------------------------------------------------
 
   void log_parameters_() {
@@ -232,31 +264,65 @@ class SingleMotorNode : public rclcpp::Node {
 
   // -- motion ---------------------------------------------------------------
 
-  bool run_open_close_() {
-    for (int cycle = 0; cycle < cycles_ && rclcpp::ok(); ++cycle) {
-      RCLCPP_INFO(get_logger(), "[cycle %d/%d] write_position -> open (%.3f rad)", cycle + 1, cycles_,
-                  open_position_rad_);
-      if (!write_position_(open_position_rad_)) {
-        return false;
-      }
-      sleep_(wait_seconds_);
+  // How a position command is sent to the servo.
+  enum class WriteMode { kWritePosition, kSyncWritePosition, kRegWritePosition };
 
-      RCLCPP_INFO(get_logger(), "[cycle %d/%d] write_position -> close (%.3f rad)", cycle + 1, cycles_,
-                  close_position_rad_);
-      if (!write_position_(close_position_rad_)) {
-        return false;
-      }
-      if (cycle + 1 < cycles_) {
-        RCLCPP_INFO(get_logger(),
-          "[cycle %d/%d] waiting %.1f seconds before next cycle",
-          cycle + 1, cycles_, cycle_wait_seconds_);
-        sleep_(cycle_wait_seconds_);
-      }
+  static const char* write_mode_name_(WriteMode mode) {
+    switch (mode) {
+      case WriteMode::kWritePosition:
+        return "write_position";
+      case WriteMode::kSyncWritePosition:
+        return "sync_write_position";
+      case WriteMode::kRegWritePosition:
+        return "reg_write_position";
+    }
+    return "unknown";
+  }
+
+  bool run_open_close_() {
+    RCLCPP_INFO(get_logger(), "=== Cycle 1/3: write_position (single-servo command) ===");
+    if (!run_one_cycle_(WriteMode::kWritePosition)) {
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "waiting %.1f seconds before next cycle", cycle_wait_seconds_);
+    if (!sleep_(cycle_wait_seconds_)) {
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "=== Cycle 2/3: sync_write_position (sync command) ===");
+    if (!run_one_cycle_(WriteMode::kSyncWritePosition)) {
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "waiting %.1f seconds before next cycle", cycle_wait_seconds_);
+    if (!sleep_(cycle_wait_seconds_)) {
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "=== Cycle 3/3: reg_write_position + action (staged command) ===");
+    return run_one_cycle_(WriteMode::kRegWritePosition);
+  }
+
+  bool run_one_cycle_(WriteMode mode) {
+    const char* method = write_mode_name_(mode);
+
+    RCLCPP_INFO(get_logger(), "[%s] -> open (%.3f rad)", method, open_position_rad_);
+    if (!move_to_(open_position_rad_, mode)) {
+      return false;
+    }
+    if (!sleep_(wait_seconds_)) {
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "[%s] -> close (%.3f rad)", method, close_position_rad_);
+    if (!move_to_(close_position_rad_, mode)) {
+      return false;
     }
     return true;
   }
 
-  bool write_position_(double position_rad) {
+  bool move_to_(double position_rad, WriteMode mode) {
     // Radians -> servo ticks, centered on the midpoint (0 rad = 2048 ticks).
     int position_ticks = feetech_driver::from_radians(position_rad) + feetech_driver::kStsMidpoint;
 
@@ -269,10 +335,27 @@ class SingleMotorNode : public rclcpp::Node {
       position_ticks = std::clamp(position_ticks, 0, kMaxTick);
     }
 
+    // Apply velocity and torque limit dynamically on every command.
     const int speed_ticks = feetech_driver::from_radians(max_velocity_rad_s_);
-    if (const auto result = protocol_->write_position(id_, position_ticks, speed_ticks, acceleration_); !result) {
-      RCLCPP_ERROR(get_logger(), "write_position(%.3f rad = %d ticks) -> %s", position_rad, position_ticks,
-                   result.error().c_str());
+
+    feetech_driver::Result result;
+    switch (mode) {
+      case WriteMode::kWritePosition:
+        result = protocol_->write_position(id_, position_ticks, speed_ticks, acceleration_, effective_max_torque_);
+        break;
+      case WriteMode::kSyncWritePosition:
+        result = protocol_->sync_write_position(std::vector<uint8_t>{id_}, {position_ticks}, {speed_ticks},
+                                                {acceleration_}, {effective_max_torque_});
+        break;
+      case WriteMode::kRegWritePosition:
+        // reg_write stages the command; reg_write_action triggers execution.
+        result = protocol_->reg_write_position(id_, position_ticks, speed_ticks, acceleration_, effective_max_torque_)
+                     .and_then([&] { return protocol_->reg_write_action(id_); });
+        break;
+    }
+    if (!result) {
+      RCLCPP_ERROR(get_logger(), "move to %.3f rad (%d ticks, %d ticks/s, torque %d) -> %s", position_rad,
+                   position_ticks, speed_ticks, effective_max_torque_, result.error().c_str());
       return false;
     }
     return true;
@@ -317,9 +400,14 @@ class SingleMotorNode : public rclcpp::Node {
     }
   }
 
-  void sleep_(double seconds) {
-    const auto duration = std::chrono::duration<double>(seconds);
-    std::this_thread::sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(duration));
+  // Interruptible sleep: returns false as soon as a shutdown (e.g. Ctrl+C) is
+  // requested, so the caller can abort the sequence promptly.
+  bool sleep_(double seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(50ms);
+    }
+    return rclcpp::ok();
   }
 
   // Parameters
@@ -329,16 +417,19 @@ class SingleMotorNode : public rclcpp::Node {
   double open_position_rad_{};
   double close_position_rad_{};
   double max_velocity_rad_s_{};
-  int max_force_{};
+  double max_torque_percent_{};
   int acceleration_{};
   double wait_seconds_{};
   double cycle_wait_seconds_{};
-  int cycles_{};
+
+  // Full-scale torque limit (max_torque_limit register range 0..1000).
+  static constexpr int kMaxTorque = 1000;
 
   // Runtime
   std::unique_ptr<feetech_driver::CommunicationProtocol> protocol_;
   JointParams params_;
   uint8_t id_{0};
+  int effective_max_torque_{kMaxTorque};
 };
 
 }  // namespace feetech_ros2_driver
